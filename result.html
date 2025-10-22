@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Analysis Result</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<a href="/">← Back</a>
+<h3>Prediction: {{ label }}</h3>
+
+<div class="grid">
+    <div>
+        <h4>Original Image</h4>
+        <img src="{{ original }}" />
+    </div>
+    <div>
+        <h4>Grad-CAM Heatmap</h4>
+        <img src="{{ heatmap }}" />
+    </div>
+</div>
+
+<h4>Pseudo-3D Brain View</h4>
+<div>{{ vol_html|safe }}</div>
+</body>
+</html>
