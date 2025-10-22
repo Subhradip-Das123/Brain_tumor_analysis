@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torchvision.models as models  # ✅ THIS ONE IS CRITICAL
+import torchvision.models as models
 import os
 import gdown
 import torchvision.transforms as transforms
@@ -11,31 +11,54 @@ import plotly.graph_objects as go
 from scipy import ndimage
 
 # ======================================================
-# 1️⃣ Load Model
+# 1️⃣ Load Model (with Safe Fallbacks)
 # ======================================================
-# Define your CNN architecture (must match training model)
 def load_model():
-    """Load trained VGG16 model and weights from Google Drive"""
+    """Load trained VGG16 model and weights from Google Drive (supports both full model and state_dict)."""
     model_path = "model/brain_tumor_model.pth"
 
-    # 1️⃣ Download model if missing
+    # Download model if missing
     if not os.path.exists(model_path):
         os.makedirs("model", exist_ok=True)
         file_id = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"  # ✅ your Google Drive file ID
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
         gdown.download(url, model_path, quiet=False)
 
-    # 2️⃣ Initialize the same architecture used during training
-    model = models.vgg16(pretrained=False)
-    model.classifier[6] = nn.Linear(4096, 2)  # 2 output classes: Tumor / No Tumor
+    # Try to load the model safely
+    try:
+        # Case 1️⃣: Model saved as full model (torch.save(model, ...))
+        model = torch.load(model_path, map_location=torch.device('cpu'))
+        model.eval()
+        print("✅ Loaded full model successfully.")
+        return model
 
-    # 3️⃣ Load the saved state_dict
-    state_dict = torch.load(model_path, map_location=torch.device('cpu'))
-    model.load_state_dict(state_dict)
+    except Exception:
+        # Case 2️⃣: Model saved as state_dict (torch.save(model.state_dict(), ...))
+        print("⚠️ Model appears to be a state_dict — rebuilding VGG16 architecture...")
+        model = models.vgg16(pretrained=False)
+        model.classifier[6] = nn.Linear(4096, 2)  # 2 output classes: Tumor / No Tumor
 
-    # 4️⃣ Set to evaluation mode
-    model.eval()
-    return model
+        state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+
+        # Fix DataParallel prefixes if present
+        if any(k.startswith("module.") for k in state_dict.keys()):
+            from collections import OrderedDict
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                new_state_dict[k.replace("module.", "")] = v
+            state_dict = new_state_dict
+
+        try:
+            model.load_state_dict(state_dict)
+            print("✅ Loaded weights successfully (state_dict).")
+        except RuntimeError as e:
+            print("❌ Error loading weights:", e)
+            raise RuntimeError("Model architecture does not match weights. Recheck your training model setup.")
+
+        model.eval()
+        return model
+
+
 # ======================================================
 # 2️⃣ Preprocess and Predict
 # ======================================================
@@ -44,7 +67,7 @@ def preprocess_image(image):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5])  # adjust if trained differently
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # updated to 3 channels
     ])
     return transform(image).unsqueeze(0)
 
@@ -62,17 +85,7 @@ def predict_tumor(model, image_tensor):
 # 3️⃣ Grad-CAM Overlay Function
 # ======================================================
 def overlay_heatmap(img_bgr, heatmap, alpha=0.4):
-    """
-    Overlay a heatmap (e.g., GradCAM) on the original MRI image.
-
-    Args:
-        img_bgr: Original image in BGR format
-        heatmap: Heatmap array (grayscale, values 0-255)
-        alpha: Transparency factor for overlay (0.0-1.0)
-
-    Returns:
-        Blended image with heatmap overlay
-    """
+    """Overlay a heatmap on the original MRI image."""
     heatmap_resized = cv2.resize(heatmap, (img_bgr.shape[1], img_bgr.shape[0]))
     heatmap_normalized = np.uint8(255 * heatmap_resized / (heatmap_resized.max() + 1e-8))
     heatmap_colored = cv2.applyColorMap(heatmap_normalized, cv2.COLORMAP_JET)
@@ -84,17 +97,7 @@ def overlay_heatmap(img_bgr, heatmap, alpha=0.4):
 # 4️⃣ Pseudo-3D MRI Volume Generator
 # ======================================================
 def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
-    """
-    Create a pseudo-3D MRI volume for web visualization.
-
-    Args:
-        img_bgr: Input MRI image in BGR format
-        gradcam_heatmap: Optional GradCAM heatmap
-        depth: Number of slices (default 24)
-
-    Returns:
-        volume, tumor_mask
-    """
+    """Create a pseudo-3D MRI volume for visualization."""
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     img_resized = cv2.resize(img_gray, (64, 64))
     img_normalized = img_resized.astype(np.float32) / 255.0
@@ -130,9 +133,7 @@ def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
 # 5️⃣ 3D Visualization (Plotly)
 # ======================================================
 def volume_to_html(volume, tumor_mask=None, title="3D MRI Brain Visualization"):
-    """
-    Convert 3D MRI volume into an interactive Plotly visualization.
-    """
+    """Convert 3D MRI volume into an interactive Plotly visualization."""
     depth, height, width = volume.shape
     step = 2
     volume_sub = volume[::step, ::step, ::step]
@@ -213,9 +214,3 @@ def load_nifti_volume(nifti_path):
     except Exception as e:
         print(f"Error loading NIfTI file: {e}")
         return None
-
-
-
-
-
-
