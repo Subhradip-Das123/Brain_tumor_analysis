@@ -17,8 +17,8 @@ def load_model():
     model_path = "model/brain_tumor_model.pth"
     if not os.path.exists(model_path):
         os.makedirs("model", exist_ok=True)
-        file_id = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"  # ✅ your Google Drive file ID
-        url = f"https://drive.google.com/uc?id={file_id}"
+        file_id = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
         gdown.download(url, model_path, quiet=False)
     model = torch.load(model_path, map_location=torch.device('cpu'))
     model.eval()
@@ -202,3 +202,4 @@ def load_nifti_volume(nifti_path):
     except Exception as e:
         print(f"Error loading NIfTI file: {e}")
         return None
+
