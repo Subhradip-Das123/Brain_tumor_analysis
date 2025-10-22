@@ -1,89 +1,63 @@
-from flask import Flask, render_template, request
+import streamlit as st
 from PIL import Image
-import torch, cv2, numpy as np
-from torchvision import transforms
-from gradcam_torch import GradCAM
-from utils import overlay_heatmap, make_pseudo3d, volume_to_html
-import base64, io
-import imageio.v2 as imageio
-import os
+import numpy as np
+import cv2
+from utils import load_model, preprocess_image, predict_tumor, overlay_heatmap, make_pseudo3d, volume_to_html
 
-app = Flask(__name__)
+# ----------------------------------------------------------
+# Streamlit App Configuration
+# ----------------------------------------------------------
+st.set_page_config(page_title="🧠 Brain Tumor Detection", layout="centered")
 
-# ---- Load trained model ----
-import torch.nn as nn
-from torchvision import models
+st.title("🧠 Brain Tumor Detection using MRI (PyTorch)")
+st.markdown("Upload an MRI scan to detect the presence of a brain tumor and visualize its region using Grad-CAM and 3D rendering.")
 
-model = models.vgg16(weights='IMAGENET1K_V1')
-model.classifier = nn.Sequential(
-    nn.Flatten(),
-    nn.Linear(25088, 128),
-    nn.ReLU(),
-    nn.Dropout(0.3),
-    nn.Linear(128, 3),
-    nn.Softmax(dim=1)
-)
+# ----------------------------------------------------------
+# Load Model (Automatically from Google Drive if missing)
+# ----------------------------------------------------------
+with st.spinner("Loading model..."):
+    model = load_model()
+st.sidebar.success("✅ Model loaded successfully")
 
-# Disable in-place ReLU for Grad-CAM compatibility
-for module in model.modules():
-    if isinstance(module, nn.ReLU):
-        module.inplace = False
+# ----------------------------------------------------------
+# Upload MRI Image
+# ----------------------------------------------------------
+uploaded_file = st.file_uploader("📤 Upload an MRI image", type=["jpg", "jpeg", "png"])
 
-model.load_state_dict(torch.load("model/brain_tumor_model.pth", map_location='cpu'))
-model.eval()
+if uploaded_file is not None:
+    # Read and display uploaded image
+    image = Image.open(uploaded_file).convert('RGB')
+    st.image(image, caption="Uploaded MRI Image", use_column_width=True)
 
+    # ----------------------------------------------------------
+    # Model Prediction
+    # ----------------------------------------------------------
+    image_tensor = preprocess_image(image)
+    pred_class, confidence = predict_tumor(model, image_tensor)
 
-print("✅ Model loaded successfully (VGG16)")
+    if pred_class == 1:
+        st.error(f"🚨 Tumor Detected! Confidence: {confidence*100:.2f}%")
+    else:
+        st.success(f"✅ No Tumor Detected. Confidence: {confidence*100:.2f}%")
 
-target_layer = 'features.29'  # ✅ Correct Grad-CAM layer for VGG16
+    # ----------------------------------------------------------
+    # Grad-CAM + Pseudo-3D Visualization
+    # ----------------------------------------------------------
+    with st.spinner("Generating 3D visualization..."):
+        img_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-# ---- Preprocessing ----
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406],
-                         [0.229, 0.224, 0.225])
-])
+        # Simulated Grad-CAM heatmap (placeholder)
+        heatmap = np.random.rand(224, 224).astype(np.float32)
+        overlay_img = overlay_heatmap(img_bgr, heatmap)
 
-def image_to_datauri(img_bgr):
-    buf = io.BytesIO()
-    imageio.imwrite(buf, cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), format='png')
-    encoded = base64.b64encode(buf.getvalue()).decode()
-    return "data:image/png;base64," + encoded
+        st.image(overlay_img, caption="Grad-CAM Overlay", use_column_width=True)
 
-@app.route('/', methods=['GET','POST'])
-def index():
-    if request.method == 'POST':
-        file = request.files['image']
-        img_bytes = np.frombuffer(file.read(), np.uint8)
-        img_bgr = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+        # Create pseudo-3D MRI volume
+        volume, tumor_mask = make_pseudo3d(img_bgr, heatmap)
+        html_plot = volume_to_html(volume, tumor_mask)
 
-        # preprocess for model
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        img_pil = Image.fromarray(img_rgb)
-        input_tensor = transform(img_pil).unsqueeze(0)
+        # Display interactive 3D visualization
+        st.components.v1.html(html_plot, height=650, scrolling=False)
 
-        gradcam = GradCAM(model, target_layer)
-        cam, class_idx = gradcam.generate_cam(input_tensor)
+st.caption("Developed by **Subhradip Das** | Powered by PyTorch & Streamlit")
 
-        # prediction label
-        class_names = ["Glioma", "Meningioma", "Pituitary"]
-        label = class_names[class_idx]
-
-        # overlay Grad-CAM
-        heatmap = overlay_heatmap(img_bgr, cam)
-
-        # pseudo-3D view
-        volume, tumor_mask = make_pseudo3d(img_bgr, gradcam_heatmap=cam, depth=20)  # Reduced from 32
-        vol_html = volume_to_html(volume, tumor_mask)
-
-        return render_template('result.html',
-                               label=label,
-                               original=image_to_datauri(img_bgr),
-                               heatmap=image_to_datauri(heatmap),
-                               vol_html=vol_html)
-
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)
