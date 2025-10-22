@@ -1,6 +1,5 @@
 streamlit
-keras==3.4.1
-keras-core
+tensorflow==2.12.0
 gdown
 opencv-python-headless
 numpy
