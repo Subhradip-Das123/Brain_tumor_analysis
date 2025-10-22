@@ -12,18 +12,59 @@ from scipy import ndimage
 # ======================================================
 # 1️⃣ Load Model
 # ======================================================
+# Define your CNN architecture (must match training model)
+class BrainTumorNet(nn.Module):
+    def __init__(self):
+        super(BrainTumorNet, self).__init__()
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        self.fc_layers = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 28 * 28, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, 2)  # 2 classes: Tumor / No Tumor
+        )
+
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = self.fc_layers(x)
+        return x
+
+
 def load_model():
     """Load trained PyTorch model, download if missing"""
-    import torch, os, gdown
-
     model_path = "model/brain_tumor_model.pth"
     if not os.path.exists(model_path):
         os.makedirs("model", exist_ok=True)
-        file_id = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"  # ✅ your file ID
+        file_id = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"  # ✅ your Google Drive file ID
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
         gdown.download(url, model_path, quiet=False)
 
-    model = torch.load(model_path, map_location=torch.device('cpu'))
+    # Initialize model and load state dict
+    model = BrainTumorNet()
+    state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+
+    # If the weights were saved using DataParallel, fix keys
+    if any(k.startswith("module.") for k in state_dict.keys()):
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            new_state_dict[k.replace("module.", "")] = v
+        state_dict = new_state_dict
+
+    model.load_state_dict(state_dict)
     model.eval()
     return model
 
@@ -204,5 +245,6 @@ def load_nifti_volume(nifti_path):
     except Exception as e:
         print(f"Error loading NIfTI file: {e}")
         return None
+
 
 
