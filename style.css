@@ -1,0 +1,28 @@
+body {
+  font-family: sans-serif;
+  background: #0b0e13;
+  color: #fff;
+  padding: 20px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+img {
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 0 10px #333;
+}
+button {
+  padding: 10px 20px;
+  background: #2d7af1;
+  border: none;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+}
+a {
+  color: #87cefa;
+  text-decoration: none;
+}
