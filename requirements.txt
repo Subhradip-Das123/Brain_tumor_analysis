@@ -1,8 +1,8 @@
 streamlit
-tflite-runtime
+tensorflow-cpu==2.12.0
 opencv-python-headless
-gdown
 numpy
 pillow
 plotly
 scipy
+gdown
