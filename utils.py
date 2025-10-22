@@ -1,5 +1,6 @@
 import torch
-import torch.nn as nn     # ✅ ADD THIS LINE
+import torch.nn as nn
+import torchvision.models as models  # ✅ THIS ONE IS CRITICAL
 import os
 import gdown
 import torchvision.transforms as transforms
@@ -212,6 +213,7 @@ def load_nifti_volume(nifti_path):
     except Exception as e:
         print(f"Error loading NIfTI file: {e}")
         return None
+
 
 
 
