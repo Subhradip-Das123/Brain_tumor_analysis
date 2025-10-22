@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn     # ✅ ADD THIS LINE
 import os
 import gdown
 import torchvision.transforms as transforms
@@ -7,7 +8,6 @@ import numpy as np
 import cv2
 import plotly.graph_objects as go
 from scipy import ndimage
-
 
 # ======================================================
 # 1️⃣ Load Model
@@ -245,6 +245,7 @@ def load_nifti_volume(nifti_path):
     except Exception as e:
         print(f"Error loading NIfTI file: {e}")
         return None
+
 
 
 
