@@ -1,138 +1,147 @@
+# ======================================================
+# 🧠 Brain Tumor MRI Detection (PyTorch .pth version)
+# Includes: GradCAM + 3D MRI Visualization
+# Works with Google Drive or Local paths
+# ======================================================
+
 import os
 import cv2
 import numpy as np
 import plotly.graph_objects as go
 from PIL import Image
 from scipy import ndimage
-
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras import Model
-
-# If you trained at IMAGE_SIZE=128, keep that here:
-IMAGE_SIZE = 128  # change to your training size if different
+import torch
+import torch.nn.functional as F
+from torchvision import transforms
+from torch import nn
 
 
 # ======================================================
-# 1) Load Keras model
+# 0️⃣ Setup constants
 # ======================================================
-def load_model_tf(model_path="model/brain_tumor_model.h5"):
+IMAGE_SIZE = 128  # must match your training size
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ======================================================
+# 1️⃣ Load model (Google Drive or local)
+# ======================================================
+def load_model_torch(model_path=None, model_class=None):
     """
-    Load a Keras (.h5) model saved via model.save(...).
+    Loads a PyTorch model from a .pth file.
+    model_class: a class defining your model architecture.
     """
+    if model_path is None:
+        try:
+            from google.colab import drive
+            drive.mount('/content/drive', force_remount=True)
+            model_path = "/content/drive/MyDrive/brain_tumor_model.pth"
+            print(f"✅ Using Google Drive model: {model_path}")
+        except Exception:
+            model_path = "model/brain_tumor_model.pth"
+            print(f"✅ Using local model path: {model_path}")
+
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model not found at {model_path}")
-    model = load_model(model_path)
+        raise FileNotFoundError(f"❌ Model not found at {model_path}")
+
+    if model_class is None:
+        raise ValueError("Please provide your model architecture class (model_class).")
+
+    model = model_class()
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+    model.eval().to(DEVICE)
+    print("✅ Model loaded successfully!")
     return model
 
 
 # ======================================================
-# 2) Preprocess and predict
+# 2️⃣ Preprocess and predict
 # ======================================================
 def preprocess_image(image: Image.Image):
     """
-    Resize to training size and scale to [0,1] (match your training code).
-    Returns a batch tensor (1, H, W, 3).
+    Convert PIL image to tensor, normalize to [0,1],
+    and resize to (IMAGE_SIZE, IMAGE_SIZE).
     """
-    img = image.resize((IMAGE_SIZE, IMAGE_SIZE))
-    arr = np.asarray(img).astype(np.float32) / 255.0
-    if arr.ndim == 2:  # grayscale safety
-        arr = np.stack([arr]*3, axis=-1)
-    if arr.shape[-1] == 4:  # RGBA -> RGB
-        arr = arr[..., :3]
-    return np.expand_dims(arr, axis=0)
+    transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+    ])
+    return transform(image).unsqueeze(0).to(DEVICE)
 
 
+@torch.no_grad()
 def predict_tumor(model, x):
     """
-    Returns (pred_idx, confidence, probs array).
+    Run model prediction. Returns (pred_idx, confidence, probs)
     """
-    probs = model.predict(x, verbose=0)[0]  # (C,)
+    logits = model(x)
+    probs = F.softmax(logits, dim=1).cpu().numpy()[0]
     pred_idx = int(np.argmax(probs))
     confidence = float(np.max(probs))
     return pred_idx, confidence, probs
 
 
 # ======================================================
-# 3) Grad-CAM for Keras
+# 3️⃣ Grad-CAM for PyTorch
 # ======================================================
-def _find_last_conv_layer(model):
-    """
-    Find the last conv layer. If you used VGG16(include_top=False) inside Sequential,
-    it’s typically model.get_layer('vgg16').get_layer('block5_conv3').
-    This function searches robustly.
-    """
-    # Try nested VGG16 first
-    try:
-        vgg = model.get_layer('vgg16')
-        for lname in ['block5_conv3', 'block5_conv2', 'block5_conv1']:
-            try:
-                return vgg.get_layer(lname).name
-            except Exception:
-                pass
-    except Exception:
-        pass
+class GradCAM:
+    def __init__(self, model, target_layer_name):
+        self.model = model
+        self.target_layer = self._get_target_layer(target_layer_name)
+        self.gradients = None
+        self.activations = None
+        self._register_hooks()
 
-    # Generic fallback: last conv layer anywhere
-    for layer in reversed(model.layers):
-        try:
-            if 'conv' in layer.name and len(layer.output_shape) == 4:
-                return layer.name
-        except Exception:
-            # Some layers might not have output_shape before build
-            continue
+    def _get_target_layer(self, name):
+        """
+        Gets a submodule by name.
+        Example: 'features.29' for VGG or 'layer4.2.conv3' for ResNet.
+        """
+        layer = self.model
+        for attr in name.split('.'):
+            layer = getattr(layer, attr)
+        return layer
 
-    raise ValueError("No suitable conv layer found for Grad-CAM.")
+    def _register_hooks(self):
+        def forward_hook(module, input, output):
+            self.activations = output.detach()
 
+        def backward_hook(module, grad_input, grad_output):
+            self.gradients = grad_output[0].detach()
 
-def gradcam_heatmap(model, x, eps=1e-8):
-    """
-    Compute Grad-CAM heatmap (H, W) float in [0,1] for the predicted class.
-    """
-    # 1) Find target conv layer
-    last_conv_name = _find_last_conv_layer(model)
-    last_conv_layer = model.get_layer('vgg16').get_layer(last_conv_name) if 'vgg16' in [l.name for l in model.layers] else model.get_layer(last_conv_name)
+        self.target_layer.register_forward_hook(forward_hook)
+        self.target_layer.register_backward_hook(backward_hook)
 
-    # 2) Build a model that maps input -> (conv outputs, predictions)
-    grad_model = Model(
-        inputs=model.inputs,
-        outputs=[last_conv_layer.output, model.output],
-        name="gradcam_model",
-    )
+    def generate(self, x, target_class=None):
+        """
+        Generates Grad-CAM heatmap for target class.
+        """
+        self.model.zero_grad()
+        output = self.model(x)
 
-    # 3) Forward + gradient tape
-    with tf.GradientTape() as tape:
-        conv_outputs, preds = grad_model(x, training=False)
-        pred_idx = tf.argmax(preds[0])
-        loss = preds[:, pred_idx]
+        if target_class is None:
+            target_class = output.argmax(dim=1).item()
 
-    # 4) Gradients of the top predicted class wrt conv outputs
-    grads = tape.gradient(loss, conv_outputs)  # shape (1, Hc, Wc, C)
+        loss = output[0, target_class]
+        loss.backward()
 
-    # 5) Global-average-pool the gradients over width/height
-    weights = tf.reduce_mean(grads, axis=(1, 2))  # (1, C)
+        # Compute Grad-CAM
+        grads = self.gradients.mean(dim=[2, 3], keepdim=True)
+        cam = (grads * self.activations).sum(dim=1, keepdim=True)
+        cam = F.relu(cam)
+        cam = F.interpolate(cam, size=(IMAGE_SIZE, IMAGE_SIZE), mode="bilinear", align_corners=False)
+        cam = cam[0, 0].cpu().numpy()
 
-    # 6) Weighted sum over channels to get CAM
-    cam = tf.reduce_sum(tf.multiply(conv_outputs, tf.expand_dims(tf.expand_dims(weights, 1), 1)), axis=-1)  # (1, Hc, Wc)
-    cam = cam[0].numpy()
-
-    # 7) ReLU and normalize to [0,1]
-    cam = np.maximum(cam, 0)
-    cam = cam / (cam.max() + eps)
-
-    # 8) Resize to input image size used by model
-    H, W = x.shape[1], x.shape[2]
-    cam = cv2.resize(cam, (W, H), interpolation=cv2.INTER_CUBIC)
-    return cam
+        cam -= cam.min()
+        cam /= (cam.max() + 1e-8)
+        return cam
 
 
 # ======================================================
-# 4) Visualization helpers
+# 4️⃣ Visualization functions
 # ======================================================
 def overlay_heatmap(img_bgr, heatmap, alpha=0.4):
-    """
-    Blend OpenCV BGR image with a JET heatmap built from `heatmap` (H, W) in [0,1].
-    """
+    """Overlay heatmap on top of original image."""
     heatmap_uint8 = np.uint8(255 * heatmap)
     heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
     overlay = cv2.addWeighted(img_bgr, 1 - alpha, heatmap_color, alpha, 0)
@@ -140,10 +149,7 @@ def overlay_heatmap(img_bgr, heatmap, alpha=0.4):
 
 
 def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
-    """
-    Produce a simple 3D volume (D, H, W) using blurred/intensity-attenuated copies
-    of a 2D MRI, and optional tumor mask from Grad-CAM.
-    """
+    """Create pseudo-3D MRI volume with tumor highlight."""
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     img_resized = cv2.resize(img_gray, (64, 64))
     img_norm = img_resized.astype(np.float32) / 255.0
@@ -163,7 +169,7 @@ def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
             hm = cv2.resize(gradcam_heatmap, (64, 64))
             hm = hm / (hm.max() + 1e-8)
             tumor = hm > 0.5
-            tumor_mask.append(tumor if abs(i - center) < depth // 3 else np.zeros_like(tumor, dtype=bool))
+            tumor_mask.append(tumor if abs(i - center) < depth // 3 else np.zeros_like(tumor))
         else:
             tumor_mask.append(np.zeros((64, 64), dtype=bool))
 
@@ -171,9 +177,7 @@ def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
 
 
 def volume_to_fig(volume, tumor_mask=None, title="3D MRI Brain Visualization"):
-    """
-    Convert 3D volume (D,H,W) to a Plotly Volume figure for Streamlit.
-    """
+    """Plotly 3D visualization."""
     depth, height, width = volume.shape
     step = 2
     vol_sub = volume[::step, ::step, ::step]
@@ -190,22 +194,20 @@ def volume_to_fig(volume, tumor_mask=None, title="3D MRI Brain Visualization"):
         value=vol_sub.flatten(),
         isomin=0.15, isomax=0.85,
         opacity=0.1, surface_count=10,
-        colorscale='Gray', showscale=False,
+        colorscale='Gray', showscale=False
     ))
 
     if tumor_mask is not None and np.any(tumor_mask):
         t_sub = tumor_mask[::step, ::step, ::step]
         t_vals = t_sub.astype(float) * vol_sub
-        t_flat = t_vals.flatten()
-        idx = t_flat > 0.1
-        if np.any(idx):
-            fig.add_trace(go.Volume(
-                x=X.flatten()[idx], y=Y.flatten()[idx], z=Z.flatten()[idx],
-                value=t_flat[idx],
-                isomin=0.1, isomax=1.0,
-                opacity=0.4, surface_count=8,
-                colorscale='Hot', showscale=True, name="Tumor",
-            ))
+        mask = t_vals.flatten() > 0.1
+        fig.add_trace(go.Volume(
+            x=X.flatten()[mask], y=Y.flatten()[mask], z=Z.flatten()[mask],
+            value=t_vals.flatten()[mask],
+            isomin=0.1, isomax=1.0,
+            opacity=0.4, surface_count=8,
+            colorscale='Hot', showscale=True, name="Tumor Region"
+        ))
 
     fig.update_layout(
         title=dict(text=title, x=0.5),
@@ -213,7 +215,65 @@ def volume_to_fig(volume, tumor_mask=None, title="3D MRI Brain Visualization"):
         scene=dict(aspectmode="cube"),
         margin=dict(l=0, r=0, b=0, t=40),
         paper_bgcolor='rgb(30,30,30)',
-        font=dict(color='white'),
+        font=dict(color='white')
     )
     return fig
+
+
+# ======================================================
+# 5️⃣ Example Usage
+# ======================================================
+if __name__ == "__main__":
+    # 🧩 Define your model architecture (must match training)
+    class BrainTumorNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.features = nn.Sequential(
+                nn.Conv2d(3, 16, 3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(16, 32, 3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2)
+            )
+            self.classifier = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(32 * 32 * 32, 64),
+                nn.ReLU(),
+                nn.Linear(64, 2)  # binary classification
+            )
+
+        def forward(self, x):
+            x = self.features(x)
+            x = self.classifier(x)
+            return x
+
+    # 1️⃣ Load model
+    model = load_model_torch(model_class=BrainTumorNet)
+
+    # 2️⃣ Load image
+    image_path = "/content/drive/MyDrive/MRI/Training/pituitary/Tr-pi_0010.jpg"  # or local "test_mri.jpg"
+    image = Image.open(image_path)
+
+    # 3️⃣ Preprocess
+    x = preprocess_image(image)
+
+    # 4️⃣ Predict
+    pred_idx, confidence, probs = predict_tumor(model, x)
+    print(f"\n🩺 Prediction: Class {pred_idx}, Confidence {confidence:.2f}")
+
+    # 5️⃣ Grad-CAM
+    cam_gen = GradCAM(model, target_layer_name="features.3")  # pick your conv layer index
+    cam = cam_gen.generate(x)
+
+    # 6️⃣ Overlay Heatmap
+    img_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    overlay = overlay_heatmap(img_bgr, cam)
+    cv2.imwrite("gradcam_overlay.jpg", overlay)
+    print("✅ Grad-CAM overlay saved as gradcam_overlay.jpg")
+
+    # 7️⃣ 3D Visualization
+    volume, tumor_mask = make_pseudo3d(img_bgr, cam)
+    fig = volume_to_fig(volume, tumor_mask)
+    fig.show()
 
