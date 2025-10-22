@@ -1,83 +1,90 @@
+import os
+import cv2
+import gdown
+import numpy as np
 import streamlit as st
 from PIL import Image
-import torch
-import cv2
-import numpy as np
-from torchvision import transforms
-import os
-import gdown
-from gradcam_torch import GradCAM
-from utils import load_model, preprocess_image, predict_tumor, overlay_heatmap, make_pseudo3d, volume_to_fig
 
-# -----------------------------
-# 🧠 Page Setup
-# -----------------------------
-st.set_page_config(page_title="🧠 Brain Tumor Detection", layout="wide")
-st.title("🧠 Brain Tumor Detection using VGG16 + Grad-CAM + 3D Visualization")
+from utils import (
+    load_model_tf,
+    preprocess_image,
+    predict_tumor,
+    gradcam_heatmap,
+    overlay_heatmap,
+    make_pseudo3d,
+    volume_to_fig,
+)
 
-# -----------------------------
-# 📦 Auto-download Model from Drive if Missing
-# -----------------------------
-MODEL_PATH = "model/brain_tumor_model.pth"
+# ----------------------------------------------------------
+# Page config
+# ----------------------------------------------------------
+st.set_page_config(page_title="🧠 Brain Tumor Detection (Keras)", layout="wide")
+st.title("🧠 Brain Tumor Detection (VGG16 • Keras) with Grad-CAM + 3D Visualization")
+
+# ----------------------------------------------------------
+# Auto-download model from Google Drive if missing
+# ----------------------------------------------------------
+MODEL_PATH = "model/brain_tumor_model.h5"
+FILE_ID = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"  # <-- your Drive file id
 
 if not os.path.exists(MODEL_PATH):
     os.makedirs("model", exist_ok=True)
-    file_id = "1qUajdKsWAvqU1L2uP2zsgZVtDwCJsiWi"  # ✅ your Google Drive model ID
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    st.warning("📦 Downloading model file (~70MB)... please wait.")
+    url = f"https://drive.google.com/uc?export=download&id={FILE_ID}"
+    st.warning("📦 Downloading Keras model (~70MB) from Google Drive…")
     gdown.download(url, MODEL_PATH, quiet=False)
-    st.success("✅ Model downloaded successfully!")
+    st.success("✅ Model downloaded")
 
-# -----------------------------
-# 🧠 Load Model
-# -----------------------------
+# ----------------------------------------------------------
+# Load model (cached)
+# ----------------------------------------------------------
 @st.cache_resource
 def get_model():
-    return load_model(MODEL_PATH)
+    return load_model_tf(MODEL_PATH)
 
 model = get_model()
-target_layer = 'features.29'
-st.success("✅ Model loaded successfully!")
+st.sidebar.success("✅ Model loaded")
 
-# -----------------------------
-# 📤 File Upload
-# -----------------------------
-uploaded_file = st.file_uploader("📤 Upload an MRI image (jpg/png)", type=["jpg", "jpeg", "png"])
+# Optional: class names (adjust if needed)
+CLASS_NAMES = ["Glioma", "Meningioma", "Pituitary"]
 
-if uploaded_file is not None:
+# ----------------------------------------------------------
+# Upload image
+# ----------------------------------------------------------
+uploaded = st.file_uploader("📤 Upload an MRI image (jpg/png)", type=["jpg", "jpeg", "png"])
+
+if uploaded:
     # Read image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_pil = Image.fromarray(img_rgb)
-    st.image(img_rgb, caption="🩺 Uploaded MRI Image", use_container_width=True)
 
-    # Preprocess and predict
-    image_tensor = preprocess_image(img_pil)
+    st.image(img_rgb, caption="🩺 Uploaded MRI", use_container_width=True)
 
-    with st.spinner("🔍 Running model prediction..."):
-        pred_idx, confidence = predict_tumor(model, image_tensor)
-        class_names = ["Glioma", "Meningioma", "Pituitary"]
-        label = class_names[pred_idx]
-        st.markdown(f"### 🧩 **Predicted Tumor Type:** `{label}` ({confidence*100:.2f}% confidence)")
+    # Preprocess + predict
+    with st.spinner("🔍 Running model prediction…"):
+        x = preprocess_image(img_pil)  # shape (1, H, W, 3)
+        pred_idx, confidence, probs = predict_tumor(model, x)
+        label = CLASS_NAMES[pred_idx] if pred_idx < len(CLASS_NAMES) else f"Class {pred_idx}"
+        st.markdown(f"### 🧩 **Prediction:** `{label}`  ·  Confidence: `{confidence*100:.2f}%`")
 
-    # GradCAM heatmap
-    with st.spinner("🔥 Generating Grad-CAM heatmap..."):
-        gradcam = GradCAM(model, target_layer)
-        cam, _ = gradcam.generate_cam(image_tensor)
-        heatmap = overlay_heatmap(img_bgr, cam)
+    # Grad-CAM
+    with st.spinner("🔥 Generating Grad-CAM heatmap…"):
+        cam = gradcam_heatmap(model, x)            # (H, W) float [0..1]
+        heat_overlay = overlay_heatmap(img_bgr, cam)
 
-    # Display GradCAM results
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.image(img_rgb, caption="🧠 Original MRI", use_container_width=True)
-    with col2:
-        st.image(heatmap, caption="🔥 Grad-CAM Overlay", use_container_width=True)
+    with c2:
+        st.image(heat_overlay, caption="🔥 Grad-CAM Overlay", use_container_width=True)
 
-    # 3D visualization
-    with st.spinner("🧩 Creating pseudo 3D MRI visualization..."):
+    # Pseudo-3D viz
+    with st.spinner("🧩 Building pseudo 3D visualization…"):
         volume, tumor_mask = make_pseudo3d(img_bgr, gradcam_heatmap=cam, depth=24)
         fig = volume_to_fig(volume, tumor_mask)
 
     st.markdown("### 🧠 3D MRI Brain Visualization")
     st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Upload an MRI image to get a prediction, Grad-CAM heatmap, and 3D visualization.")
