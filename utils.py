@@ -4,7 +4,7 @@ import cv2
 from scipy import ndimage
 
 # ==============================================================
-# ✅ OVERLAY HEATMAP ON ORIGINAL IMAGE
+#  OVERLAY HEATMAP ON ORIGINAL IMAGE
 # ==============================================================
 
 def overlay_heatmap(img_bgr, heatmap, alpha=0.4):
@@ -39,7 +39,7 @@ def overlay_heatmap(img_bgr, heatmap, alpha=0.4):
 
 
 # ==============================================================
-# ✅ GENERATE PSEUDO 3D MRI VISUALIZATION
+#  GENERATE PSEUDO 3D MRI VISUALIZATION
 # ==============================================================
 
 def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
@@ -94,7 +94,7 @@ def make_pseudo3d(img_bgr, gradcam_heatmap=None, depth=24):
 
 
 # ==============================================================
-# ✅ CONVERT 3D VOLUME TO HTML VISUALIZATION
+#  CONVERT 3D VOLUME TO HTML VISUALIZATION
 # ==============================================================
 
 def volume_to_html(volume, tumor_mask=None, title="3D MRI Brain Visualization"):
@@ -197,7 +197,7 @@ def volume_to_html(volume, tumor_mask=None, title="3D MRI Brain Visualization"):
 
 
 # ==============================================================
-# ✅ LOAD NIFTI (.nii / .nii.gz) MRI FILES
+#  LOAD NIFTI (.nii / .nii.gz) MRI FILES
 # ==============================================================
 
 def load_nifti_volume(nifti_path):
@@ -230,3 +230,4 @@ def load_nifti_volume(nifti_path):
     except Exception as e:
         print(f"❌ Error loading NIfTI file: {e}")
         return None
+
