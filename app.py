@@ -14,10 +14,10 @@ app = Flask(__name__)
 import torch.nn as nn
 from torchvision import models
 
-# ✅ Initialize VGG16 architecture
+#  Initialize VGG16 architecture
 model = models.vgg16(weights='IMAGENET1K_V1')
 
-# ✅ Modify classifier for 4 classes
+#  Modify classifier for 4 classes
 model.classifier = nn.Sequential(
     nn.Flatten(),
     nn.Linear(25088, 128),
@@ -27,18 +27,18 @@ model.classifier = nn.Sequential(
     nn.Softmax(dim=1)
 )
 
-# ✅ Disable in-place ReLU for Grad-CAM compatibility
+#  Disable in-place ReLU for Grad-CAM compatibility
 for module in model.modules():
     if isinstance(module, nn.ReLU):
         module.inplace = False
 
-# ✅ Load your trained model weights
+#  Load your trained model weights
 model.load_state_dict(torch.load("model/brain_tumor_model2.pth", map_location='cpu'))
 model.eval()
 
-print("✅ Model loaded successfully (VGG16 - 4 Classes)")
+print(" Model loaded successfully (VGG16 - 4 Classes)")
 
-# ✅ Grad-CAM target layer for VGG16
+#  Grad-CAM target layer for VGG16
 target_layer = 'features.29'
 
 # ---- Image Preprocessing ----
@@ -65,23 +65,23 @@ def index():
         img_bytes = np.frombuffer(file.read(), np.uint8)
         img_bgr = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
 
-        # ✅ Convert to RGB & prepare tensor
+        #  Convert to RGB & prepare tensor
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         img_pil = Image.fromarray(img_rgb)
         input_tensor = transform(img_pil).unsqueeze(0)
 
-        # ✅ Grad-CAM Visualization
+        #  Grad-CAM Visualization
         gradcam = GradCAM(model, target_layer)
         cam, class_idx = gradcam.generate_cam(input_tensor)
 
-        # ✅ Prediction label mapping (4 classes)
+        #  Prediction label mapping (4 classes)
         class_names = ["Glioma", "Meningioma", "Notumor", "Pituitary"]
         label = class_names[class_idx]
 
-        # ✅ Overlay Grad-CAM Heatmap
+        #  Overlay Grad-CAM Heatmap
         heatmap = overlay_heatmap(img_bgr, cam)
 
-        # ✅ Generate pseudo-3D view
+        #  Generate pseudo-3D view
         volume, tumor_mask = make_pseudo3d(img_bgr, gradcam_heatmap=cam, depth=20)
         vol_html = volume_to_html(volume, tumor_mask)
 
@@ -97,3 +97,4 @@ def index():
 # ---- Run the Flask App ----
 if __name__ == '__main__':
     app.run(debug=True)
+
